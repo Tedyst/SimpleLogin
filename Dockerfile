@@ -8,6 +8,12 @@ RUN cd /code/static && npm install
 FROM python:3.7
 WORKDIR /code
 
+# Added piwheels to make the builds faster for Raspberry PI
+ARG TARGETPLATFORM
+RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ] || [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+    printf "[global]\nextra-index-url=https://www.piwheels.org/simple" | touch /etc/pip.conf; \
+    fi
+
 # install dependencies
 COPY ./requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt
