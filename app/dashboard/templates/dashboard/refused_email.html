@@ -7,7 +7,7 @@
 {% set active_page = "setting" %}
 
 {% block default_content %}
-  <div style="max-width: 60em; margin: auto">
+  <div class="col">
     <h1 class="h3 mb-5"> Quarantine </h1>
 
     <div class="alert alert-info">
@@ -22,23 +22,23 @@
 
     </div>
 
-    {% if fels|length == 0 %}
+    {% if email_logs|length == 0 %}
       <div class="my-4 p-4 card">
         You don't have any emails in Quarantine.
       </div>
     {% endif %}
 
-    {% for fel in fels %}
-      {% set refused_email = fel.refused_email %}
-      {% set forward = fel.forward %}
+    {% for email_log in email_logs %}
+      {% set refused_email = email_log.refused_email %}
+      {% set forward = email_log.forward %}
       {% set alias = forward.alias %}
 
-      <div class="card p-4 shadow-sm {% if fel.id == highlight_fel_id %} highlight-row {% endif %}">
+      <div class="card p-4 shadow-sm {% if email_log.id == highlight_id %} highlight-row {% endif %}">
         <div class="small-text">
           Sent {{ refused_email.created_at | dt }}
         </div>
 
-        From: {{ forward.website_from or forward.website_email }} <br>
+        From: {{ forward.website_email }} <br>
 
         <span>
           To: {{ alias.email }}

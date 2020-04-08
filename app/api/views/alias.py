@@ -1,22 +1,25 @@
-from email.utils import parseaddr
-
 from flask import g
 from flask import jsonify
 from flask import request
 from flask_cors import cross_origin
 
 from app.api.base import api_bp, verify_api_key
-from app.config import EMAIL_DOMAIN
-from app.config import PAGE_LIMIT
-from app.dashboard.views.alias_log import get_alias_log
-from app.dashboard.views.index import (
+from app.api.serializer import (
     AliasInfo,
+    serialize_alias_info,
+    serialize_contact,
     get_alias_infos_with_pagination,
+    get_alias_info,
+    get_alias_contacts,
+    get_alias_infos_with_pagination_v2,
+    serialize_alias_info_v2,
 )
+from app.config import EMAIL_DOMAIN
+from app.dashboard.views.alias_log import get_alias_log
+from app.email_utils import parseaddr_unicode
 from app.extensions import db
 from app.log import LOG
 from app.models import Alias, Contact
-from app.models import EmailLog
 from app.utils import random_string
 
 
@@ -57,20 +60,58 @@ def get_aliases():
 
     return (
         jsonify(
-            aliases=[
-                {
-                    "id": alias_info.id,
-                    "email": alias_info.alias.email,
-                    "creation_date": alias_info.alias.created_at.format(),
-                    "creation_timestamp": alias_info.alias.created_at.timestamp,
-                    "nb_forward": alias_info.nb_forward,
-                    "nb_block": alias_info.nb_blocked,
-                    "nb_reply": alias_info.nb_reply,
-                    "enabled": alias_info.alias.enabled,
-                    "note": alias_info.note,
-                }
-                for alias_info in alias_infos
-            ]
+            aliases=[serialize_alias_info(alias_info) for alias_info in alias_infos]
+        ),
+        200,
+    )
+
+
+@api_bp.route("/v2/aliases", methods=["GET", "POST"])
+@cross_origin()
+@verify_api_key
+def get_aliases_v2():
+    """
+    Get aliases
+    Input:
+        page_id: in query
+    Output:
+        - aliases: list of alias:
+            - id
+            - email
+            - creation_date
+            - creation_timestamp
+            - nb_forward
+            - nb_block
+            - nb_reply
+            - note
+            - (optional) latest_activity:
+                - timestamp
+                - action: forward|reply|block|bounced
+                - contact:
+                    - email
+                    - name
+                    - reverse_alias
+
+
+    """
+    user = g.user
+    try:
+        page_id = int(request.args.get("page_id"))
+    except (ValueError, TypeError):
+        return jsonify(error="page_id must be provided in request query"), 400
+
+    query = None
+    data = request.get_json(silent=True)
+    if data:
+        query = data.get("query")
+
+    alias_infos: [AliasInfo] = get_alias_infos_with_pagination_v2(
+        user, page_id=page_id, query=query
+    )
+
+    return (
+        jsonify(
+            aliases=[serialize_alias_info_v2(alias_info) for alias_info in alias_infos]
         ),
         200,
     )
@@ -139,7 +180,8 @@ def get_alias_activities(alias_id):
             - from
             - to
             - timestamp
-            - action: forward|reply|block
+            - action: forward|reply|block|bounced
+            - reverse_alias
 
     """
     user = g.user
@@ -157,14 +199,17 @@ def get_alias_activities(alias_id):
 
     activities = []
     for alias_log in alias_logs:
-        activity = {"timestamp": alias_log.when.timestamp}
+        activity = {
+            "timestamp": alias_log.when.timestamp,
+            "reverse_alias": alias_log.reverse_alias,
+        }
         if alias_log.is_reply:
             activity["from"] = alias_log.alias
-            activity["to"] = alias_log.website_from or alias_log.website_email
+            activity["to"] = alias_log.website_email
             activity["action"] = "reply"
         else:
             activity["to"] = alias_log.alias
-            activity["from"] = alias_log.website_from or alias_log.website_email
+            activity["from"] = alias_log.website_email
 
             if alias_log.bounced:
                 activity["action"] = "bounced"
@@ -209,39 +254,25 @@ def update_alias(alias_id):
     return jsonify(note=new_note), 200
 
 
-def serialize_contact(fe: Contact) -> dict:
+@api_bp.route("/aliases/<int:alias_id>", methods=["GET"])
+@cross_origin()
+@verify_api_key
+def get_alias(alias_id):
+    """
+    Get alias
+    Input:
+        alias_id: in url
+    Output:
+        Alias info, same as in get_aliases
 
-    res = {
-        "id": fe.id,
-        "creation_date": fe.created_at.format(),
-        "creation_timestamp": fe.created_at.timestamp,
-        "last_email_sent_date": None,
-        "last_email_sent_timestamp": None,
-        "contact": fe.website_from or fe.website_email,
-        "reverse_alias": fe.website_send_to(),
-    }
+    """
+    user = g.user
+    alias: Alias = Alias.get(alias_id)
 
-    fel: EmailLog = fe.last_reply()
-    if fel:
-        res["last_email_sent_date"] = fel.created_at.format()
-        res["last_email_sent_timestamp"] = fel.created_at.timestamp
+    if alias.user_id != user.id:
+        return jsonify(error="Forbidden"), 403
 
-    return res
-
-
-def get_alias_contacts(alias, page_id: int) -> [dict]:
-    q = (
-        Contact.query.filter_by(alias_id=alias.id)
-        .order_by(Contact.id.desc())
-        .limit(PAGE_LIMIT)
-        .offset(page_id * PAGE_LIMIT)
-    )
-
-    res = []
-    for fe in q.all():
-        res.append(serialize_contact(fe))
-
-    return res
+    return jsonify(**serialize_alias_info(get_alias_info(alias))), 200
 
 
 @api_bp.route("/aliases/<int:alias_id>/contacts")
@@ -303,7 +334,7 @@ def create_contact_route(alias_id):
     if alias.user_id != user.id:
         return jsonify(error="Forbidden"), 403
 
-    contact_email = data.get("contact")
+    contact_addr = data.get("contact")
 
     # generate a reply_email, make sure it is unique
     # not use while to avoid infinite loop
@@ -313,21 +344,21 @@ def create_contact_route(alias_id):
         if not Contact.get_by(reply_email=reply_email):
             break
 
-    _, website_email = parseaddr(contact_email)
+    contact_name, contact_email = parseaddr_unicode(contact_addr)
 
     # already been added
-    if Contact.get_by(alias_id=alias.id, website_email=website_email):
+    if Contact.get_by(alias_id=alias.id, website_email=contact_email):
         return jsonify(error="Contact already added"), 409
 
     contact = Contact.create(
         user_id=alias.user_id,
         alias_id=alias.id,
-        website_email=website_email,
-        website_from=contact_email,
+        website_email=contact_email,
+        name=contact_name,
         reply_email=reply_email,
     )
 
-    LOG.d("create reverse-alias for %s %s", contact_email, alias)
+    LOG.d("create reverse-alias for %s %s", contact_addr, alias)
     db.session.commit()
 
     return jsonify(**serialize_contact(contact)), 201

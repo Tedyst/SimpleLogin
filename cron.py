@@ -36,7 +36,9 @@ def delete_refused_emails():
     for refused_email in RefusedEmail.query.filter(RefusedEmail.deleted == False).all():
         if arrow.now().shift(days=1) > refused_email.delete_at >= arrow.now():
             LOG.d("Delete refused email %s", refused_email)
-            s3.delete(refused_email.path)
+            if refused_email.path:
+                s3.delete(refused_email.path)
+
             s3.delete(refused_email.full_report_path)
 
             # do not set path and full_report_path to null
@@ -128,10 +130,10 @@ def stats():
         q = q.filter(~User.email.contains(ie))
 
     nb_forward = nb_block = nb_reply = 0
-    for fel, _, _, _ in q:
-        if fel.is_reply:
+    for email_log, _, _, _ in q:
+        if email_log.is_reply:
             nb_reply += 1
-        elif fel.blocked:
+        elif email_log.blocked:
             nb_block += 1
         else:
             nb_forward += 1
@@ -148,6 +150,9 @@ def stats():
     nb_disabled_alias = Alias.query.filter(Alias.enabled == False).count()
 
     nb_app = Client.query.count()
+
+    nb_bounced_email = EmailLog.query.filter(EmailLog.bounced).count()
+    nb_spam = EmailLog.query.filter(EmailLog.is_spam).count()
 
     today = arrow.now().format()
 
@@ -172,6 +177,9 @@ nb_reply: {nb_reply} <br>
 nb_block: {nb_block} <br>
 
 nb_app: {nb_app} <br>
+
+nb_bounced_email: {nb_bounced_email} <br>
+nb_spam: {nb_spam} <br>
     """,
     )
 

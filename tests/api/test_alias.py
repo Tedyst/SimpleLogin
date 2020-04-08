@@ -2,10 +2,11 @@ import json
 
 from flask import url_for
 
-from app.config import EMAIL_DOMAIN, MAX_NB_EMAIL_FREE_PLAN, PAGE_LIMIT
+from flask import url_for
+
+from app.config import PAGE_LIMIT
 from app.extensions import db
 from app.models import User, ApiKey, Alias, Contact, EmailLog
-from app.utils import random_word
 
 
 def test_get_aliases_error_without_pagination(flask_client):
@@ -102,6 +103,81 @@ def test_get_aliases_with_pagination(flask_client):
     assert len(r.json["aliases"]) == 1
 
 
+def test_get_aliases_v2(flask_client):
+    user = User.create(
+        email="a@b.c", password="password", name="Test User", activated=True
+    )
+    db.session.commit()
+
+    # create api_key
+    api_key = ApiKey.create(user.id, "for test")
+    db.session.commit()
+
+    a0 = Alias.create_new(user, "prefix0")
+    a1 = Alias.create_new(user, "prefix1")
+    db.session.commit()
+
+    # add activity for a0
+    c0 = Contact.create(
+        user_id=user.id,
+        alias_id=a0.id,
+        website_email="c0@example.com",
+        reply_email="re0@SL",
+    )
+    db.session.commit()
+    EmailLog.create(contact_id=c0.id, user_id=user.id)
+    db.session.commit()
+
+    # a1 has more recent activity
+    c1 = Contact.create(
+        user_id=user.id,
+        alias_id=a1.id,
+        website_email="c1@example.com",
+        reply_email="re1@SL",
+    )
+    db.session.commit()
+    EmailLog.create(contact_id=c1.id, user_id=user.id)
+    db.session.commit()
+
+    # get aliases v2
+    r = flask_client.get(
+        url_for("api.get_aliases_v2", page_id=0),
+        headers={"Authentication": api_key.code},
+    )
+    assert r.status_code == 200
+
+    # make sure a1 is returned before a0
+    r0 = r.json["aliases"][0]
+    # r0 will have the following format
+    # {
+    #   "creation_date": "2020-04-06 17:52:47+00:00",
+    #   "creation_timestamp": 1586195567,
+    #   "email": "prefix1.hey@sl.local",
+    #   "enabled": true,
+    #   "id": 3,
+    #   "latest_activity": {
+    #     "action": "forward",
+    #     "contact": {
+    #       "email": "c1@example.com",
+    #       "name": null,
+    #       "reverse_alias": "\"c1 at example.com\" <re1@SL>"
+    #     },
+    #     "timestamp": 1586195567
+    #   },
+    #   "nb_block": 0,
+    #   "nb_forward": 1,
+    #   "nb_reply": 0,
+    #   "note": null
+    # }
+    assert r0["email"].startswith("prefix1")
+    assert r0["latest_activity"]["action"] == "forward"
+    assert "timestamp" in r0["latest_activity"]
+
+    assert r0["latest_activity"]["contact"]["email"] == "c1@example.com"
+    assert "name" in r0["latest_activity"]["contact"]
+    assert "reverse_alias" in r0["latest_activity"]["contact"]
+
+
 def test_delete_alias(flask_client):
     user = User.create(
         email="a@b.c", password="password", name="Test User", activated=True
@@ -182,10 +258,11 @@ def test_alias_activities(flask_client):
     assert r.status_code == 200
     assert len(r.json["activities"]) == PAGE_LIMIT
     for ac in r.json["activities"]:
-        assert ac["action"]
         assert ac["from"]
+        assert ac["to"]
+        assert ac["timestamp"]
         assert ac["action"]
-        assert ac["action"]
+        assert ac["reverse_alias"]
 
     # second page, should return 1 or 2 results only
     r = flask_client.get(
@@ -287,7 +364,7 @@ def test_create_contact_route(flask_client):
     )
 
     assert r.status_code == 201
-    assert r.json["contact"] == "First Last <first@example.com>"
+    assert r.json["contact"] == "first@example.com"
     assert "creation_date" in r.json
     assert "creation_timestamp" in r.json
     assert r.json["last_email_sent_date"] is None
@@ -331,3 +408,37 @@ def test_delete_contact(flask_client):
 
     assert r.status_code == 200
     assert r.json == {"deleted": True}
+
+
+def test_get_alias(flask_client):
+    user = User.create(
+        email="a@b.c", password="password", name="Test User", activated=True
+    )
+    db.session.commit()
+
+    # create api_key
+    api_key = ApiKey.create(user.id, "for test")
+    db.session.commit()
+
+    # create more aliases than PAGE_LIMIT
+    alias = Alias.create_new_random(user)
+    db.session.commit()
+
+    # get aliases on the 1st page, should return PAGE_LIMIT aliases
+    r = flask_client.get(
+        url_for("api.get_alias", alias_id=alias.id),
+        headers={"Authentication": api_key.code},
+    )
+    assert r.status_code == 200
+
+    # assert returned field
+    res = r.json
+    assert "id" in res
+    assert "email" in res
+    assert "creation_date" in res
+    assert "creation_timestamp" in res
+    assert "nb_forward" in res
+    assert "nb_block" in res
+    assert "nb_reply" in res
+    assert "enabled" in res
+    assert "note" in res

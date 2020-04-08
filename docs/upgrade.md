@@ -5,6 +5,31 @@ No emails or any data is lost in the upgrade process. The same process is by the
 Sometimes upgrading to a major version might require running a manual migration. This is for example the case when upgrading to 2.0.0. In this case please follow the corresponding migration first before running these scripts.
 
 <details>
+<summary>Upgrade to 2.1.0 from 2.0.0</summary>
+<p>
+
+2.1.0 comes with PGP support. If you use PGP, please follow these steps to enable this feature:
+
+1) In your home directory (where `dkim.key` is located), create directory to store SimpleLogin data
+
+```bash
+mkdir sl
+mkdir sl/pgp # to store PGP key
+mkdir sl/db # to store database 
+```
+
+2) Then add this line to your config simplelogin.env file
+
+```
+GNUPGHOME=/sl/pgp # where to store PGP keys
+```
+
+Now you can follow the usual steps to upgrade SimpleLogin.
+
+</p>
+</details>
+
+<details>
 <summary>Upgrade to 2.0.0</summary>
 <p>
 
@@ -56,7 +81,7 @@ for user in User.query.all():
 
 ```bash
 # Pull the latest version
-sudo docker pull simplelogin/app:2.0.0
+sudo docker pull simplelogin/app:2.1.0
 
 # Stop SimpleLogin containers
 sudo docker stop sl-email sl-migration sl-app
@@ -67,32 +92,47 @@ sudo docker rm -f sl-email sl-migration sl-app
 # Run the database migration
 sudo docker run --rm \
     --name sl-migration \
+    -v $(pwd)/sl:/sl \
     -v $(pwd)/dkim.key:/dkim.key \
     -v $(pwd)/dkim.pub.key:/dkim.pub.key \
     -v $(pwd)/simplelogin.env:/code/.env \
     --network="sl-network" \
-    simplelogin/app:2.0.0 flask db upgrade
+    simplelogin/app:2.1.0 flask db upgrade
 
-# Run the webapp container
-sudo docker run -d \
-    --name sl-app \
+# Run init data
+sudo docker run --rm \
+    --name sl-init \
+    -v $(pwd)/sl:/sl \
     -v $(pwd)/simplelogin.env:/code/.env \
     -v $(pwd)/dkim.key:/dkim.key \
     -v $(pwd)/dkim.pub.key:/dkim.pub.key \
     -p 7777:7777 \
     --restart always \
     --network="sl-network" \
-    simplelogin/app:2.0.0
+    simplelogin/app:2.1.0 python init_app.py
+
+# Run the webapp container
+sudo docker run -d \
+    --name sl-app \
+    -v $(pwd)/sl:/sl \
+    -v $(pwd)/simplelogin.env:/code/.env \
+    -v $(pwd)/dkim.key:/dkim.key \
+    -v $(pwd)/dkim.pub.key:/dkim.pub.key \
+    -p 7777:7777 \
+    --restart always \
+    --network="sl-network" \
+    simplelogin/app:2.1.0
 
 # Run the email handler container
 sudo docker run -d \
     --name sl-email \
+    -v $(pwd)/sl:/sl \
     -v $(pwd)/simplelogin.env:/code/.env \
     -v $(pwd)/dkim.key:/dkim.key \
     -v $(pwd)/dkim.pub.key:/dkim.pub.key \
     -p 20381:20381 \
     --restart always \
     --network="sl-network" \
-    simplelogin/app:2.0.0 python email_handler.py
+    simplelogin/app:2.1.0 python email_handler.py
 ```
 

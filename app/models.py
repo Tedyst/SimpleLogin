@@ -17,6 +17,9 @@ from app.config import (
     URL,
     AVATAR_URL_EXPIRATION,
     JOB_ONBOARDING_1,
+    JOB_ONBOARDING_2,
+    JOB_ONBOARDING_3,
+    JOB_ONBOARDING_4,
 )
 from app.extensions import db
 from app.log import LOG
@@ -146,6 +149,12 @@ class User(db.Model, ModelMixin, UserMixin):
 
     profile_picture = db.relationship(File, foreign_keys=[profile_picture_id])
 
+    # Use the "via" format for sender address, i.e. "name@example.com via SimpleLogin"
+    # If False, use the format "Name - name at example.com"
+    use_via_format_for_sender = db.Column(
+        db.Boolean, default=True, nullable=False, server_default="1"
+    )
+
     @classmethod
     def create(cls, email, name, password=None, **kwargs):
         user: User = super(User, cls).create(email=email, name=name, **kwargs)
@@ -168,6 +177,21 @@ class User(db.Model, ModelMixin, UserMixin):
             name=JOB_ONBOARDING_1,
             payload={"user_id": user.id},
             run_at=arrow.now().shift(days=1),
+        )
+        Job.create(
+            name=JOB_ONBOARDING_2,
+            payload={"user_id": user.id},
+            run_at=arrow.now().shift(days=2),
+        )
+        Job.create(
+            name=JOB_ONBOARDING_3,
+            payload={"user_id": user.id},
+            run_at=arrow.now().shift(days=3),
+        )
+        Job.create(
+            name=JOB_ONBOARDING_4,
+            payload={"user_id": user.id},
+            run_at=arrow.now().shift(days=4),
         )
         db.session.flush()
 
@@ -704,7 +728,10 @@ class Contact(db.Model, ModelMixin):
     user_id = db.Column(db.ForeignKey(User.id, ondelete="cascade"), nullable=False)
     alias_id = db.Column(db.ForeignKey(Alias.id, ondelete="cascade"), nullable=False)
 
-    # used to be envelope header, should be mail header from instead
+    name = db.Column(
+        db.String(512), nullable=True, default=None, server_default=text("NULL")
+    )
+
     website_email = db.Column(db.String(512), nullable=False)
 
     # the email from header, e.g. AB CD <ab@cd.com>
@@ -717,25 +744,67 @@ class Contact(db.Model, ModelMixin):
     # it has the prefix "reply+" to distinguish with other email
     reply_email = db.Column(db.String(512), nullable=False)
 
+    # whether a contact is created via CC
+    is_cc = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
+
     alias = db.relationship(Alias, backref="contacts")
+    user = db.relationship(User)
 
     def website_send_to(self):
         """return the email address with name.
-        to use when user wants to send an email from the alias"""
+        to use when user wants to send an email from the alias
+        Return
+        "First Last | email at example.com" <ra+random_string@SL>
+        """
 
-        name = self.website_email.replace("@", " at ")
+        # Prefer using contact name if possible
+        name = self.name
 
-        if self.website_from:
-            website_name, _ = parseaddr(self.website_from)
+        # if no name, try to parse it from website_from
+        if not name and self.website_from:
+            try:
+                from app.email_utils import parseaddr_unicode
 
-            if website_name:
-                # remove all double quote
-                website_name = website_name.replace('"', "")
-                name = website_name + " | " + name
+                name, _ = parseaddr_unicode(self.website_from)
+            except Exception:
+                # Skip if website_from is wrongly formatted
+                LOG.warning(
+                    "Cannot parse contact %s website_from %s", self, self.website_from
+                )
+                name = ""
 
-        return f'"{name}" <{self.reply_email}>'
+        # remove all double quote
+        if name:
+            name = name.replace('"', "")
+
+        if name:
+            name = name + " | " + self.website_email.replace("@", " at ")
+        else:
+            name = self.website_email.replace("@", " at ")
+
         # cannot use formataddr here as this field is for email client, not for MTA
-        # return formataddr((self.website_email.replace("@", " at "), self.reply_email))
+        return f'"{name}" <{self.reply_email}>'
+
+    def new_addr(self):
+        """
+        Replace original email by reply_email. 2 possible formats:
+        - first@example.com by SimpleLogin <reply_email> OR
+        - First Last - first at example.com <reply_email>
+        And return new address with RFC 2047 format
+
+        `new_email` is a special reply address
+        """
+        user = self.user
+        if user.use_via_format_for_sender:
+            new_name = f"{self.website_email} via SimpleLogin"
+        else:
+            name = self.name or ""
+            new_name = (
+                name + (" - " if name else "") + self.website_email.replace("@", " at ")
+            ).strip()
+
+        new_addr = formataddr((new_name, self.reply_email)).strip()
+        return new_addr.strip()
 
     def last_reply(self) -> "EmailLog":
         """return the most recent reply"""
@@ -744,6 +813,9 @@ class Contact(db.Model, ModelMixin):
             .order_by(desc(EmailLog.created_at))
             .first()
         )
+
+    def __repr__(self):
+        return f"<Contact {self.id} {self.website_email} {self.alias_id}>"
 
 
 class EmailLog(db.Model, ModelMixin):
@@ -762,6 +834,10 @@ class EmailLog(db.Model, ModelMixin):
     # usually because the forwarded email is too spammy
     bounced = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
 
+    # SpamAssassin result
+    is_spam = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
+    spam_status = db.Column(db.Text, nullable=True, default=None)
+
     # Point to the email that has been refused
     refused_email_id = db.Column(
         db.ForeignKey("refused_email.id", ondelete="SET NULL"), nullable=True
@@ -771,6 +847,17 @@ class EmailLog(db.Model, ModelMixin):
     forward = db.relationship(Contact)
 
     contact = db.relationship(Contact)
+
+    def get_action(self) -> str:
+        """return the action name: forward|reply|block|bounced"""
+        if self.is_reply:
+            return "reply"
+        elif self.bounced:
+            return "bounced"
+        elif self.blocked:
+            return "blocked"
+        else:
+            return "forward"
 
 
 class Subscription(db.Model, ModelMixin):
@@ -982,7 +1069,7 @@ class RefusedEmail(db.Model, ModelMixin):
     full_report_path = db.Column(db.String(128), unique=True, nullable=False)
 
     # The original email, to display to user
-    path = db.Column(db.String(128), unique=True, nullable=False)
+    path = db.Column(db.String(128), unique=True, nullable=True)
 
     user_id = db.Column(db.ForeignKey(User.id, ondelete="cascade"), nullable=False)
 
@@ -993,7 +1080,10 @@ class RefusedEmail(db.Model, ModelMixin):
     deleted = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
 
     def get_url(self, expires_in=3600):
-        return s3.get_url(self.path, expires_in)
+        if self.path:
+            return s3.get_url(self.path, expires_in)
+        else:
+            return s3.get_url(self.full_report_path, expires_in)
 
     def __repr__(self):
         return f"<Refused Email {self.id} {self.path} {self.delete_at}>"

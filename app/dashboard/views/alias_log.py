@@ -10,7 +10,7 @@ from app.models import Alias, EmailLog, Contact
 
 class AliasLog:
     website_email: str
-    website_from: str
+    reverse_alias: str
     alias: str
     when: arrow.Arrow
     is_reply: bool
@@ -61,7 +61,7 @@ def alias_log(alias_id, page_id):
     return render_template("dashboard/alias_log.html", **locals())
 
 
-def get_alias_log(alias: Alias, page_id=0):
+def get_alias_log(alias: Alias, page_id=0) -> [AliasLog]:
     logs: [AliasLog] = []
     mailbox = alias.mailbox_email()
 
@@ -74,15 +74,15 @@ def get_alias_log(alias: Alias, page_id=0):
         .offset(page_id * PAGE_LIMIT)
     )
 
-    for fe, fel in q:
+    for contact, email_log in q:
         al = AliasLog(
-            website_email=fe.website_email,
-            website_from=fe.website_from,
+            website_email=contact.website_email,
+            reverse_alias=contact.website_send_to(),
             alias=alias.email,
-            when=fel.created_at,
-            is_reply=fel.is_reply,
-            blocked=fel.blocked,
-            bounced=fel.bounced,
+            when=email_log.created_at,
+            is_reply=email_log.is_reply,
+            blocked=email_log.blocked,
+            bounced=email_log.bounced,
             mailbox=mailbox,
         )
         logs.append(al)

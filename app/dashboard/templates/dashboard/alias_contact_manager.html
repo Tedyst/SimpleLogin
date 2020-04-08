@@ -49,7 +49,7 @@
   <div class="row">
     {% for contact in contacts %}
       <div class="col-md-6">
-        <div class="my-2 p-2 card {% if contact.id == contact_id %} highlight-row {% endif %}">
+        <div class="my-2 p-2 card {% if contact.id == highlight_contact_id %} highlight-row {% endif %}">
           <div>
             <span>
               <a href="{{ 'mailto:' + contact.website_send_to() }}"
@@ -66,7 +66,7 @@
           </div>
 
           <div>
-            <i class="fe fe-mail"></i> ➡ {{ contact.website_from or contact.website_email }}
+            <i class="fe fe-mail"></i> ➡ {{ contact.website_email }}
           </div>
 
           <div class="mb-2 text-muted small-text">

@@ -1,9 +1,10 @@
 import os
+from email.header import decode_header
 from email.message import Message
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import make_msgid, formatdate
+from email.utils import make_msgid, formatdate, parseaddr, formataddr
 from smtplib import SMTP
 from typing import Optional
 
@@ -227,7 +228,7 @@ def send_email(
     email_domain = SUPPORT_EMAIL[SUPPORT_EMAIL.find("@") + 1 :]
     add_dkim_signature(msg, email_domain)
 
-    msg_raw = msg.as_string().encode()
+    msg_raw = msg.as_bytes()
     smtp.sendmail(SUPPORT_EMAIL, to_email, msg_raw)
 
 
@@ -253,7 +254,7 @@ def add_dkim_signature(msg: Message, email_domain: str):
     # Specify headers in "byte" form
     # Generate message signature
     sig = dkim.sign(
-        msg.as_string().encode(),
+        msg.as_bytes(),
         DKIM_SELECTOR,
         email_domain.encode(),
         DKIM_PRIVATE_KEY.encode(),
@@ -363,3 +364,70 @@ def get_orig_message_from_bounce(msg: Message) -> Message:
         # 7th is original message
         if i == 7:
             return part
+
+
+def get_orig_message_from_spamassassin_report(msg: Message) -> Message:
+    """parse the original email from Spamassassin report"""
+    i = 0
+    for part in msg.walk():
+        i += 1
+
+        # the original message is the 4th part
+        # 1st part is the root part,  multipart/report
+        # 2nd is text/plain, SpamAssassin part
+        # 3rd is the original message in message/rfc822 content type
+        # 4th is original message
+        if i == 4:
+            return part
+
+
+def get_addrs_from_header(msg: Message, header) -> [str]:
+    """Get all addresses contained in `header`
+    Used for To or CC header.
+    """
+    ret = []
+    header_content = msg.get_all(header)
+    if not header_content:
+        return ret
+
+    for addrs in header_content:
+        for addr in addrs.split(","):
+            ret.append(addr.strip())
+
+    # do not return empty string
+    return [r for r in ret if r]
+
+
+def get_spam_info(msg: Message) -> (bool, str):
+    """parse SpamAssassin header to detect whether a message is classified as spam.
+    Return (is spam, spam status detail)
+    The header format is
+    ```X-Spam-Status: No, score=-0.1 required=5.0 tests=DKIM_SIGNED,DKIM_VALID,
+  DKIM_VALID_AU,RCVD_IN_DNSWL_BLOCKED,RCVD_IN_MSPIKE_H2,SPF_PASS,
+  URIBL_BLOCKED autolearn=unavailable autolearn_force=no version=3.4.2```
+    """
+    spamassassin_status = msg["X-Spam-Status"]
+    if not spamassassin_status:
+        return False, ""
+
+    # yes or no
+    spamassassin_answer = spamassassin_status[: spamassassin_status.find(",")]
+
+    return spamassassin_answer.lower() == "yes", spamassassin_status
+
+
+def parseaddr_unicode(addr) -> (str, str):
+    """Like parseaddr but return name in unicode instead of in RFC 2047 format
+    '=?UTF-8?B?TmjGoW4gTmd1eeG7hW4=?= <abcd@gmail.com>' -> ('Nhơn Nguyễn', "abcd@gmail.com")
+    """
+    name, email = parseaddr(addr)
+    email = email.strip().lower()
+    if name:
+        name = name.strip()
+        decoded_string, charset = decode_header(name)[0]
+        if charset is not None:
+            name = decoded_string.decode(charset)
+        else:
+            name = decoded_string
+
+    return name, email

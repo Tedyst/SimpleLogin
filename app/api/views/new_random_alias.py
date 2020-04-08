@@ -3,6 +3,7 @@ from flask import jsonify, request
 from flask_cors import cross_origin
 
 from app.api.base import api_bp, verify_api_key
+from app.api.serializer import serialize_alias_info, get_alias_info
 from app.config import MAX_NB_EMAIL_FREE_PLAN
 from app.extensions import db
 from app.log import LOG
@@ -55,4 +56,7 @@ def new_random_alias():
         AliasUsedOn.create(alias_id=alias.id, hostname=hostname, user_id=alias.user_id)
         db.session.commit()
 
-    return jsonify(alias=alias.email), 201
+    return (
+        jsonify(alias=alias.email, **serialize_alias_info(get_alias_info(alias))),
+        201,
+    )

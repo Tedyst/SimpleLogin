@@ -8,6 +8,7 @@ from wtforms import StringField, validators, ValidationError
 
 from app.config import EMAIL_DOMAIN
 from app.dashboard.base import dashboard_bp
+from app.email_utils import parseaddr_unicode
 from app.extensions import db
 from app.log import LOG
 from app.models import Alias, Contact
@@ -46,11 +47,12 @@ class NewContactForm(FlaskForm):
 
 
 @dashboard_bp.route("/alias_contact_manager/<alias_id>/", methods=["GET", "POST"])
-@dashboard_bp.route(
-    "/alias_contact_manager/<alias_id>/<contact_id>", methods=["GET", "POST"]
-)
 @login_required
-def alias_contact_manager(alias_id, contact_id=None):
+def alias_contact_manager(alias_id):
+    highlight_contact_id = None
+    if request.args.get("highlight_contact_id"):
+        highlight_contact_id = int(request.args.get("highlight_contact_id"))
+
     alias = Alias.get(alias_id)
 
     # sanity check
@@ -67,7 +69,7 @@ def alias_contact_manager(alias_id, contact_id=None):
     if request.method == "POST":
         if request.form.get("form-name") == "create":
             if new_contact_form.validate():
-                contact_email = new_contact_form.email.data.strip()
+                contact_addr = new_contact_form.email.data.strip()
 
                 # generate a reply_email, make sure it is unique
                 # not use while to avoid infinite loop
@@ -77,32 +79,44 @@ def alias_contact_manager(alias_id, contact_id=None):
                     if not Contact.get_by(reply_email=reply_email):
                         break
 
-                _, website_email = parseaddr(contact_email)
-
-                # already been added
-                if Contact.get_by(alias_id=alias.id, website_email=website_email):
-                    flash(f"{website_email} is already added", "error")
+                try:
+                    contact_name, contact_email = parseaddr_unicode(contact_addr)
+                except Exception:
+                    flash(f"{contact_addr} is invalid", "error")
                     return redirect(
-                        url_for("dashboard.alias_contact_manager", alias_id=alias_id)
+                        url_for("dashboard.alias_contact_manager", alias_id=alias_id,)
+                    )
+                contact_email = contact_email.lower()
+
+                contact = Contact.get_by(alias_id=alias.id, website_email=contact_email)
+                # already been added
+                if contact:
+                    flash(f"{contact_email} is already added", "error")
+                    return redirect(
+                        url_for(
+                            "dashboard.alias_contact_manager",
+                            alias_id=alias_id,
+                            highlight_contact_id=contact.id,
+                        )
                     )
 
                 contact = Contact.create(
                     user_id=alias.user_id,
                     alias_id=alias.id,
-                    website_email=website_email,
-                    website_from=contact_email,
+                    website_email=contact_email,
+                    name=contact_name,
                     reply_email=reply_email,
                 )
 
-                LOG.d("create reverse-alias for %s", contact_email)
+                LOG.d("create reverse-alias for %s", contact_addr)
                 db.session.commit()
-                flash(f"Reverse alias for {contact_email} is created", "success")
+                flash(f"Reverse alias for {contact_addr} is created", "success")
 
                 return redirect(
                     url_for(
                         "dashboard.alias_contact_manager",
                         alias_id=alias_id,
-                        contact_id=contact.id,
+                        highlight_contact_id=contact.id,
                     )
                 )
         elif request.form.get("form-name") == "delete":
@@ -120,11 +134,13 @@ def alias_contact_manager(alias_id, contact_id=None):
                     url_for("dashboard.alias_contact_manager", alias_id=alias_id)
                 )
 
-            contact_name = contact.website_from
+            delete_contact_email = contact.website_email
             Contact.delete(contact_id)
             db.session.commit()
 
-            flash(f"Reverse-alias for {contact_name} has been deleted", "success")
+            flash(
+                f"Reverse-alias for {delete_contact_email} has been deleted", "success"
+            )
 
             return redirect(
                 url_for("dashboard.alias_contact_manager", alias_id=alias_id)
@@ -133,13 +149,15 @@ def alias_contact_manager(alias_id, contact_id=None):
     # make sure highlighted contact is at array start
     contacts = alias.contacts
 
-    if contact_id:
-        contacts = sorted(contacts, key=lambda fe: fe.id == contact_id, reverse=True)
+    if highlight_contact_id:
+        contacts = sorted(
+            contacts, key=lambda fe: fe.id == highlight_contact_id, reverse=True
+        )
 
     return render_template(
         "dashboard/alias_contact_manager.html",
         contacts=contacts,
         alias=alias,
         new_contact_form=new_contact_form,
-        contact_id=contact_id,
+        highlight_contact_id=highlight_contact_id,
     )

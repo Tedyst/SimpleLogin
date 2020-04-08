@@ -111,6 +111,15 @@ These packages are used to verify the setup. Install them by:
 sudo apt install -y dnsutils
 ```
 
+Create a directory to store SimpleLogin data:
+
+```bash
+mkdir sl
+mkdir sl/pgp # to store PGP key
+mkdir sl/db # to store database 
+```
+
+
 
 ### DKIM
 
@@ -285,6 +294,7 @@ sudo docker run -d \
     -e POSTGRES_USER=myuser \
     -e POSTGRES_DB=simplelogin \
     -p 5432:5432 \
+    -v $(pwd)/sl/db:/var/lib/postgresql/data \
     --restart always \
     --network="sl-network" \
     postgres:12.1
@@ -341,6 +351,7 @@ alias_maps = hash:/etc/aliases
 mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128 240.0.0.0/24
 
 # Set your domain here
+mydestination =
 myhostname = app.mydomain.com
 mydomain = mydomain.com
 myorigin = mydomain.com
@@ -451,6 +462,8 @@ DKIM_PUBLIC_KEY_PATH=/dkim.pub.key
 DB_URI=postgresql://myuser:mypassword@sl-db:5432/simplelogin
 
 FLASK_SECRET=put_something_secret_here
+
+GNUPGHOME=/sl/pgp
 ```
 
 
@@ -459,6 +472,7 @@ Before running the webapp, you need to prepare the database by running the migra
 ```bash
 sudo docker run --rm \
     --name sl-migration \
+    -v $(pwd)/sl:/sl \
     -v $(pwd)/dkim.key:/dkim.key \
     -v $(pwd)/dkim.pub.key:/dkim.pub.key \
     -v $(pwd)/simplelogin.env:/code/.env \
@@ -473,6 +487,7 @@ Now, it's time to run the `webapp` container!
 ```bash
 sudo docker run -d \
     --name sl-app \
+    -v $(pwd)/sl:/sl \
     -v $(pwd)/simplelogin.env:/code/.env \
     -v $(pwd)/dkim.key:/dkim.key \
     -v $(pwd)/dkim.pub.key:/dkim.pub.key \
@@ -487,6 +502,7 @@ Next run the `email handler`
 ```bash
 sudo docker run -d \
     --name sl-email \
+    -v $(pwd)/sl:/sl \
     -v $(pwd)/simplelogin.env:/code/.env \
     -v $(pwd)/dkim.key:/dkim.key \
     -v $(pwd)/dkim.pub.key:/dkim.pub.key \
@@ -539,6 +555,7 @@ You could make a donation to SimpleLogin on our Patreon page at https://www.patr
 The above self-hosting instructions correspond to a freshly Ubuntu server and doesn't cover all possible server configuration.
 Below are pointers to different topics:
 
+- [Enable SSL](docs/ssl.md)
 - [UFW - uncomplicated firewall](docs/ufw.md)
 - [SES - Amazon Simple Email Service](docs/ses.md)
 - [Upgrade existing SimpleLogin installation](docs/upgrade.md)
@@ -642,7 +659,7 @@ Output: if api key is correct, return a json with user name and whether user is 
 If api key is incorrect, return 401.
 
 
-#### GET /api/v2/alias/options
+#### GET /api/v3/alias/options
 
 User alias info and suggestion. Used by the first extension screen when user opens the extension.
 
@@ -654,19 +671,12 @@ Output: a json with the following field:
 - can_create: boolean. Whether user can create new alias
 - suffixes: list of string. List of alias `suffix` that user can use. If user doesn't have custom domain, this list has a single element which is the alias default domain (simplelogin.co).
 - prefix_suggestion: string. Suggestion for the `alias prefix`. Usually this is the website name extracted from `hostname`. If no `hostname`, then the `prefix_suggestion` is empty.
-- existing: list of string. List of existing alias.
 - recommendation: optional field, dictionary. If an alias is already used for this website, the recommendation will be returned. There are 2 subfields in `recommendation`: `alias` which is the recommended alias and `hostname` is the website on which this alias is used before.
 
 For ex:
 ```json
 {
     "can_create": true,
-    "existing": [
-        "my-first-alias.meo@sl.local",
-        "e1.cat@sl.local",
-        "e2.chat@sl.local",
-        "e3.cat@sl.local"
-    ],
     "prefix_suggestion": "test",
     "recommendation": {
         "alias": "e1.cat@sl.local",
@@ -697,7 +707,16 @@ If success, 201 with the new alias, for example
 
 ```json
 {
-  "alias": "www_groupon_com@my_domain.com"
+    "alias": "www_groupon_com@my_domain.com",
+    "creation_date": "2020-02-04 16:23:02+00:00",
+    "creation_timestamp": 1580833382,
+    "email": "www_groupon_com@my_domain.com",
+    "id": 4,
+    "nb_block": 0,
+    "nb_forward": 0,
+    "nb_reply": 0,
+    "enabled": true,
+    "note": "This is a note"
 }
 ```
 
@@ -717,7 +736,16 @@ If success, 201 with the new alias, for example
 
 ```json
 {
-  "alias": "www_groupon_com@my_domain.com"
+    "alias": "prefix.suffix@my_domain.com",
+    "creation_date": "2020-02-04 16:23:02+00:00",
+    "creation_timestamp": 1580833382,
+    "email": "www_groupon_com@my_domain.com",
+    "id": 4,
+    "nb_block": 0,
+    "nb_forward": 0,
+    "nb_reply": 0,
+    "enabled": true,
+    "note": "This is a note"
 }
 ```
 
@@ -768,7 +796,6 @@ Input:
 
 Output: Same output as for `/api/auth/login` endpoint
 
-
 #### POST /api/auth/register
 
 Input:
@@ -804,44 +831,106 @@ Input:
 
 Output: always return 200, even if email doesn't exist. User need to enter correctly their email.
 
-#### GET /api/aliases
+
+#### GET /api/v2/aliases
 
 Get user aliases.
 
 Input:
 - `Authentication` header that contains the api key
-- `page_id` used for the pagination. The endpoint returns maximum 20 aliases for each page. `page_id` starts at 0.
+- `page_id` in query. Used for the pagination. The endpoint returns maximum 20 aliases for each page. `page_id` starts at 0.
 - (Optional) query: included in request body. Some frameworks might prevent GET request having a non-empty body, in this case this endpoint also supports POST. 
 
 Output:
-If success, 200 with the list of aliases, for example:
+If success, 200 with the list of aliases. Each alias has the following fields:
+
+- id
+- email
+- enabled
+- creation_timestamp
+- note
+- nb_block
+- nb_forward
+- nb_reply
+- (optional) latest_activity:
+    - action: forward|reply|block|bounced
+    - timestamp
+    - contact:
+        - email
+        - name
+        - reverse_alias
+
+Here's an example:
 
 ```json
 {
-    "aliases": [
-        {
-            "creation_date": "2020-02-04 16:23:02+00:00",
-            "creation_timestamp": 1580833382,
-            "email": "e3@.alo@sl.local",
-            "id": 4,
-            "nb_block": 0,
-            "nb_forward": 0,
-            "nb_reply": 0,
-            "enabled": true,
-            "note": "This is a note"
+  "aliases": [
+    {
+      "creation_date": "2020-04-06 17:57:14+00:00",
+      "creation_timestamp": 1586195834,
+      "email": "prefix1.cat@sl.local",
+      "enabled": true,
+      "id": 3,
+      "latest_activity": {
+        "action": "forward",
+        "contact": {
+          "email": "c1@example.com",
+          "name": null,
+          "reverse_alias": "\"c1 at example.com\" <re1@SL>"
         },
-        {
-            "creation_date": "2020-02-04 16:23:02+00:00",
-            "creation_timestamp": 1580833382,
-            "email": "e2@.meo@sl.local",
-            "id": 3,
-            "nb_block": 0,
-            "nb_forward": 0,
-            "nb_reply": 0,
-            "enabled": false,
-            "note": null
-        }
-    ]
+        "timestamp": 1586195834
+      },
+      "nb_block": 0,
+      "nb_forward": 1,
+      "nb_reply": 0,
+      "note": null
+    },
+    {
+      "creation_date": "2020-04-06 17:57:14+00:00",
+      "creation_timestamp": 1586195834,
+      "email": "prefix0.hey@sl.local",
+      "enabled": true,
+      "id": 2,
+      "latest_activity": {
+        "action": "forward",
+        "contact": {
+          "email": "c0@example.com",
+          "name": null,
+          "reverse_alias": "\"c0 at example.com\" <re0@SL>"
+        },
+        "timestamp": 1586195834
+      },
+      "nb_block": 0,
+      "nb_forward": 1,
+      "nb_reply": 0,
+      "note": null
+    }
+  ]
+}
+```
+
+#### GET /api/aliases/:alias_id
+
+Get alias info
+
+Input:
+- `Authentication` header that contains the api key
+- `alias_id` in url
+
+Output:
+Alias info
+
+```json
+{
+    "creation_date": "2020-02-04 16:23:02+00:00",
+    "creation_timestamp": 1580833382,
+    "email": "e3@.alo@sl.local",
+    "id": 4,
+    "nb_block": 0,
+    "nb_forward": 0,
+    "nb_reply": 0,
+    "enabled": true,
+    "note": "This is a note"
 }
 ```
 
@@ -899,13 +988,15 @@ If success, 200 with the list of activities, for example:
       "action": "reply",
       "from": "yes_meo_chat@sl.local",
       "timestamp": 1580903760,
-      "to": "marketing@example.com"
+      "to": "marketing@example.com",
+      "reverse_alias": "\"marketing at example.com\" <reply@a.b>",
     },
     {
       "action": "reply",
       "from": "yes_meo_chat@sl.local",
       "timestamp": 1580903760,
-      "to": "marketing@example.com"
+      "to": "marketing@example.com",
+      "reverse_alias": "\"marketing at example.com\" <reply@a.b>",
     }
   ]
 }

@@ -90,6 +90,9 @@ else:
 # disable the alias suffix, i.e. the ".random_word" part
 DISABLE_ALIAS_SUFFIX = "DISABLE_ALIAS_SUFFIX" in os.environ
 
+# the email address that receives all unsubscription request
+UNSUBSCRIBER = os.environ.get("UNSUBSCRIBER")
+
 DKIM_PRIVATE_KEY_PATH = get_abs_path(os.environ["DKIM_PRIVATE_KEY_PATH"])
 DKIM_PUBLIC_KEY_PATH = get_abs_path(os.environ["DKIM_PUBLIC_KEY_PATH"])
 DKIM_SELECTOR = b"dkim"
@@ -108,7 +111,7 @@ with open(DKIM_PUBLIC_KEY_PATH) as f:
     )
 
 
-DKIM_HEADERS = [b"from", b"to", b"subject"]
+DKIM_HEADERS = [b"from", b"to"]
 
 # Database
 DB_URI = os.environ["DB_URI"]
@@ -194,6 +197,9 @@ FLASK_PROFILER_PASSWORD = os.environ.get("FLASK_PROFILER_PASSWORD")
 
 # Job names
 JOB_ONBOARDING_1 = "onboarding-1"
+JOB_ONBOARDING_2 = "onboarding-2"
+JOB_ONBOARDING_3 = "onboarding-3"
+JOB_ONBOARDING_4 = "onboarding-4"
 
 # for pagination
 PAGE_LIMIT = 20
@@ -201,6 +207,13 @@ PAGE_LIMIT = 20
 # Upload to static/upload instead of s3
 LOCAL_FILE_UPLOAD = "LOCAL_FILE_UPLOAD" in os.environ
 UPLOAD_DIR = None
+
+# Greylisting features
+# nb max of activity (forward/reply) an alias can have during 1 min
+MAX_ACTIVITY_DURING_MINUTE_PER_ALIAS = 5
+
+# nb max of activity (forward/reply) a mailbox can have during 1 min
+MAX_ACTIVITY_DURING_MINUTE_PER_MAILBOX = 10
 
 if LOCAL_FILE_UPLOAD:
     print("Upload files to local dir")
